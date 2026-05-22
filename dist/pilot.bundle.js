@@ -30,7 +30,11 @@
   var DEFAULTS = {
     enabled: true,
     mode: 'small', /* globito | small | large */
-    selectedModel: 'claude-sonnet-4-6',
+    /* Default = the cheapest model with 10/10 on N=10 across the
+       Conduit benchmark's 3 flows. Per the experiment closing
+       report (2026-05-22): flash-lite at $0.0007/flow is 40x
+       cheaper than Sonnet at the same pass-rate. */
+    selectedModel: 'gemini-3.1-flash-lite',
     /* API keys per provider. Empty string = not configured. */
     apiKeys: {
       anthropic: '',
@@ -52,18 +56,40 @@
     statusProbe: ''
   };
 
-  /* All models the benchmark exercised, grouped by provider. The
-     selector in the settings modal renders them grouped + sorted. */
+  /* Model catalog with VISIBLE classification tiers per the Conduit
+     experiment (2026-05-21..22). `tier` drives the settings UI badge:
+     - 'recommended'  -> green dot + "Recomendado (default)"
+     - 'runner_up'    -> blue dot + "Runner-up"
+     - 'premium'      -> gold dot + "Premium"
+     - 'avoid'        -> yellow warning dot + "Con advertencia: <reason>"
+     - undefined      -> no badge (legacy / untested in our benchmark)
+     The selector in the settings modal renders them grouped + sorted. */
   var MODEL_CATALOG = [
-    { id: 'claude-sonnet-4-6',    provider: 'anthropic', label: 'Claude Sonnet 4.6'    },
-    { id: 'claude-haiku-4-5',     provider: 'anthropic', label: 'Claude Haiku 4.5'     },
+    /* === VALIDATED IN CONDUIT EXPERIMENT (2026-05-22) === */
+    { id: 'gemini-3.1-flash-lite', provider: 'google',    label: 'Gemini 3.1 Flash-Lite',
+      tier: 'recommended',
+      tier_note: 'Default. 10/10 sobre N=10 en los 3 flujos. $0.0007/flujo, el mas barato.' },
+    { id: 'gpt-5-mini',           provider: 'openai',    label: 'GPT-5 mini',
+      tier: 'runner_up',
+      tier_note: '10/10 sobre N=10. ~$0.006/flujo.' },
+    { id: 'claude-haiku-4-5',     provider: 'anthropic', label: 'Claude Haiku 4.5',
+      tier: 'premium',
+      tier_note: '10/10 sobre N=10. ~$0.013/flujo.' },
+    { id: 'claude-sonnet-4-6',    provider: 'anthropic', label: 'Claude Sonnet 4.6',
+      tier: 'premium',
+      tier_note: 'Premium baseline. 10/10 sobre N=10. ~$0.028/flujo.' },
+    { id: 'gpt-4o-mini',          provider: 'openai',    label: 'GPT-4o mini',
+      tier: 'avoid',
+      tier_note: 'Solo flujos lineales. Falla drill profundo (post_comment 20%).' },
+    { id: 'gemini-2.5-flash',     provider: 'google',    label: 'Gemini 2.5 Flash',
+      tier: 'avoid',
+      tier_note: 'parse_fail conocido en multi-step. Preferir 3.1 Flash-Lite.' },
+    /* === NOT IN THE EXPERIMENT (legacy / untested by Yujin) === */
     { id: 'claude-opus-4-7',      provider: 'anthropic', label: 'Claude Opus 4.7'      },
     { id: 'gpt-5.5',              provider: 'openai',    label: 'GPT-5.5'              },
     { id: 'gpt-4o',               provider: 'openai',    label: 'GPT-4o'               },
-    { id: 'gpt-4o-mini',          provider: 'openai',    label: 'GPT-4o mini'          },
     { id: 'o4-mini',              provider: 'openai',    label: 'o4-mini (reasoning)'  },
     { id: 'gemini-2.5-pro',       provider: 'google',    label: 'Gemini 2.5 Pro'       },
-    { id: 'gemini-2.5-flash',     provider: 'google',    label: 'Gemini 2.5 Flash'     },
     { id: 'gemini-flash-latest',  provider: 'google',    label: 'Gemini Flash latest'  },
     { id: 'deepseek-chat',        provider: 'deepseek',  label: 'DeepSeek Chat'        },
     { id: 'llama-3.3-70b-versatile',                provider: 'groq', label: 'Llama 3.3 70B (Groq)' },
@@ -602,9 +628,33 @@
       'Para produccion: pone la llamada al LLM detras de un proxy y guarda la key del lado servidor.'
     ]));
 
-    /* Model selector */
+    /* Model selector. Visible classification per Conduit experiment
+       (2026-05-22 closing report): tier prefix on each option text +
+       title tooltip with the rationale. Tier badges:
+         recommended -> "[OK] Recomendado"
+         runner_up   -> "[+] Runner-up"
+         premium     -> "[$] Premium"
+         avoid       -> "[!] Con advertencia"
+       Honesty visible, not in letra chica (per the brief). */
+    var TIER_PREFIX = {
+      recommended: '[OK] Recomendado | ',
+      runner_up:   '[+]  Runner-up   | ',
+      premium:     '[$]  Premium     | ',
+      avoid:       '[!]  Atencion    | '
+    };
+    /* Render-order within each provider group: recommended -> runner_up
+       -> premium -> (untested) -> avoid. So the default and the safe
+       picks appear first; the warn-tier sinks. */
+    var TIER_ORDER = { recommended: 0, runner_up: 1, premium: 2, undefined: 3, avoid: 4 };
+
     var sModel = el('section');
     sModel.appendChild(el('h3', null, ['Modelo']));
+    var modelHint = el('div', { class: 'yp-warn-box', style: 'background:#f0f7e8;border-color:#86b04a;color:#3a5a17' }, [
+      'Roster validado por el experimento Conduit (2026-05-22). ',
+      'Default = el mas barato con 10/10 sobre N=10. ',
+      'Pasa el mouse sobre cada opcion para ver costo + condiciones.'
+    ]);
+    sModel.appendChild(modelHint);
     var modelLbl = el('label');
     modelLbl.appendChild(el('span', { class: 'yp-lbl-text' }, ['Modelo activo']));
     var modelSel = el('select');
@@ -612,13 +662,22 @@
     MODEL_CATALOG.forEach(function (m) {
       (byProvider[m.provider] = byProvider[m.provider] || []).push(m);
     });
-    ['anthropic', 'openai', 'google', 'deepseek', 'groq'].forEach(function (p) {
+    ['google', 'openai', 'anthropic', 'deepseek', 'groq'].forEach(function (p) {
       var group = document.createElement('optgroup');
       group.label = p;
-      (byProvider[p] || []).forEach(function (m) {
+      var sorted = (byProvider[p] || []).slice().sort(function (a, b) {
+        var oa = TIER_ORDER[a.tier];
+        var ob = TIER_ORDER[b.tier];
+        if (oa == null) oa = 3;
+        if (ob == null) ob = 3;
+        return oa - ob;
+      });
+      sorted.forEach(function (m) {
         var opt = document.createElement('option');
         opt.value = m.id;
-        opt.textContent = m.label + (cfg.apiKeys[p] ? '' : ' (sin key)');
+        var prefix = TIER_PREFIX[m.tier] || '';
+        opt.textContent = prefix + m.label + (cfg.apiKeys[p] ? '' : ' (sin key)');
+        if (m.tier_note) opt.title = m.tier_note;
         if (cfg.selectedModel === m.id) opt.selected = true;
         group.appendChild(opt);
       });
